@@ -1,0 +1,5 @@
+scikit-learn version  - 1.6.1
+Python 3.13.16
+NumPy version:  2.1.3
+Pandas version: 2.2.3
+Joblib version: 1.6.0
