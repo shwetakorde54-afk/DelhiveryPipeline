@@ -10,6 +10,14 @@ Original file is located at
 import pandas as pd
 import numpy as np
 
+PROMISED_HOURS = {"Express": 36, "Standard": 60, "Economy": 96}
+FEATURES = [
+    "promised_hours", "distance_km", "parcel_weight_kg", "log_declared_value", "n_stops",
+    "rain_flag", "sale_event_flag", "is_cod", "is_weekend", "dispatch_hour",
+    "hub_tier", "hub_daily_capacity",
+    "label_print_batch", "scanner_build_no", "tape_roll_no", "sticker_serial_mod", "shelf_slot_no",
+]
+NOISE_COLUMNS = ["label_print_batch", "scanner_build_no", "tape_roll_no", "sticker_serial_mod", "shelf_slot_no"]
 
 def clean_shipments(raw, medians=None):
 
@@ -51,7 +59,7 @@ def clean_shipments(raw, medians=None):
 
 # build_features(clean, hubs) in src/shipment_prep.py. It returns a DataFrame with the hub columns attached by a left merge on hub_id (hub_city, region, hub_tier, hub_daily_capacity) plus these new columns: promised_hours (from PROMISED_HOURS, integer), is_cod (1 when payment_mode is COD, else 0 — Unknown gives 0), is_weekend (1 when the dispatch day is Saturday or Sunday), dispatch_hour (the hour of the dispatch timestamp as an integer; the generated data uses hours 6 to 21), and log_declared_value (natural log of declared_value_inr). It must not use delivery_hours, so that it also works on parcels that have not been delivered yet.
 def build_features(clean, hub):
-  hub_df = clean.merge(hub, on='hub_id', how='left')
+  hub_df = clean.merge(hub[["hub_id","hub_city","region","hub_tier","hub_daily_capacity"]], on='hub_id', how='left')
   hub_df["promised_hours"] = hub_df["service_type"].map(PROMISED_HOURS)
   hub_df["is_cod"] = (hub_df["payment_mode"] == "COD").astype(int)
   hub_df["is_weekend"] = (hub_df["dispatch_time"].dt.dayofweek >= 5).astype(int)
