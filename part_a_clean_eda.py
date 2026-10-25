@@ -7,6 +7,62 @@ Original file is located at
     https://colab.research.google.com/drive/1OPK2sn2qmViROTtKGkrpWntNsNiCCYSi
 """
 
+import pandas as pd
+import numpy as np
+
+
+def clean_shipments(raw, medians=None):
+
+  # drop duplicates
+  clean_df = raw.drop_duplicates(subset=['shipment_id'])
+   # clean service_type
+  clean_df['service_type'] = clean_df['service_type'].str.strip()
+  clean_df['service_type'] = clean_df['service_type'].str.title()
+  # clean payment mode
+  clean_df['payment_mode'] = clean_df['payment_mode'].fillna("Unknown")
+
+  # clean declared value
+  clean_df['declared_value'] = clean_df['declared_value'].str.replace('₹', '')
+  clean_df['declared_value_inr'] = clean_df['declared_value'].str.replace(',', '')
+  clean_df['declared_value_inr'] = pd.to_numeric(clean_df['declared_value_inr'], errors='coerce')
+  clean_df.drop('declared_value', axis=1, inplace=True)
+
+  clean_df["dispatch_time"] = pd.to_datetime(clean_df["dispatch_time"])
+
+  clean_df.loc[clean_df["parcel_weight_kg"] > 100, "parcel_weight_kg"] = np.nan
+
+  # fill missing distance_km, parcel_weight_kg and declared_value_inr with that column's median. If medians is None, compute the three medians from the non-missing values left after steps 1–6; otherwise use the dictionary passed in. The returned medians is a dictionary with exactly the keys distance_km, parcel_weight_kg, declared_value_inr and float values.
+  if medians is None:
+    medians = {}
+    medians["distance_km"] = round(clean_df["distance_km"].median(),2)
+    medians["parcel_weight_kg"] = round(clean_df["parcel_weight_kg"].median(),2)
+    medians["declared_value_inr"] = round(clean_df["declared_value_inr"].median(),2)
+  else:
+    medians = medians
+
+  clean_df["distance_km"].fillna(medians["distance_km"], inplace=True)
+  clean_df["parcel_weight_kg"].fillna(medians["parcel_weight_kg"], inplace=True)
+  clean_df["declared_value_inr"].fillna(medians["declared_value_inr"], inplace=True)
+
+  return (clean_df, medians)
+
+
+
+
+# build_features(clean, hubs) in src/shipment_prep.py. It returns a DataFrame with the hub columns attached by a left merge on hub_id (hub_city, region, hub_tier, hub_daily_capacity) plus these new columns: promised_hours (from PROMISED_HOURS, integer), is_cod (1 when payment_mode is COD, else 0 — Unknown gives 0), is_weekend (1 when the dispatch day is Saturday or Sunday), dispatch_hour (the hour of the dispatch timestamp as an integer; the generated data uses hours 6 to 21), and log_declared_value (natural log of declared_value_inr). It must not use delivery_hours, so that it also works on parcels that have not been delivered yet.
+def build_features(clean, hub):
+  hub_df = clean.merge(hub, on='hub_id', how='left')
+  hub_df["promised_hours"] = hub_df["service_type"].map(PROMISED_HOURS)
+  hub_df["is_cod"] = (hub_df["payment_mode"] == "COD").astype(int)
+  hub_df["is_weekend"] = (hub_df["dispatch_time"].dt.dayofweek >= 5).astype(int)
+  hub_df["dispatch_hour"] = hub_df["dispatch_time"].dt.hour
+  hub_df["log_declared_value"] = np.log(hub_df["declared_value_inr"])
+  hub_df.loc[hub_df["dispatch_hour"] < 6, "dispatch_hour"] = 6
+  hub_df.loc[hub_df["dispatch_hour"] > 21, "dispatch_hour"] = 21
+
+  return hub_df
+
+# part_a_clean_eda.py. Read data/raw_shipments.csv and data/hubs.csv; call your two functions; add the target is_delayed (1 when delivery_hours > promised_hours, else 0); write the result to data/modelling_table.csv (all columns, one row per unique shipment).
 raw_data = pd.read_csv("/content/data/raw_shipments.csv")
 hub_data = pd.read_csv("/content/data/hubs.csv")
 
