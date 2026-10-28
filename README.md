@@ -11,3 +11,6 @@ Part A - Data findings
 (iv) The three columns most strongly correlated with delivery_hours are promised_hours (0.8372), distance_km (0.4013), n_stops (0.3247).
 
 (v) On the filled declared_value_inr column the mean is 1533.05 and the median is 1121.5, so the mean sits above the median. After the natural log the mean is 7.028 and the median is 7.022, which are nearly the same, because the log compresses the long right tail.
+
+Part B - Findings
+model_1 is the scaler-plus-linear pipeline, and every model is fit on X_train and scored on y_val. The test row is the model with the lowest validation RMSE, scored once on X_test.
