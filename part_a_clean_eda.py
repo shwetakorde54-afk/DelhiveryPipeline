@@ -7,8 +7,23 @@ Original file is located at
     https://colab.research.google.com/drive/1OPK2sn2qmViROTtKGkrpWntNsNiCCYSi
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+hub_data = pd.read_csv("/content/data/hubs.csv")
+hub_data
+
+new_data = pd.read_csv("/content/data/new_shipments.csv")
+new_data
+
+raw_data = pd.read_csv("/content/data/raw_shipments.csv")
+raw_data
+
+
+hub_data.head()
+
+missing_val = raw_data.isna().sum()
+print(missing_val[missing_val > 0])
 
 PROMISED_HOURS = {"Express": 36, "Standard": 60, "Economy": 96}
 FEATURES = [
@@ -57,6 +72,8 @@ def clean_shipments(raw, medians=None):
 
 
 
+
+
 # build_features(clean, hubs) in src/shipment_prep.py. It returns a DataFrame with the hub columns attached by a left merge on hub_id (hub_city, region, hub_tier, hub_daily_capacity) plus these new columns: promised_hours (from PROMISED_HOURS, integer), is_cod (1 when payment_mode is COD, else 0 — Unknown gives 0), is_weekend (1 when the dispatch day is Saturday or Sunday), dispatch_hour (the hour of the dispatch timestamp as an integer; the generated data uses hours 6 to 21), and log_declared_value (natural log of declared_value_inr). It must not use delivery_hours, so that it also works on parcels that have not been delivered yet.
 def build_features(clean, hub):
   hub_df = clean.merge(hub[["hub_id","hub_city","region","hub_tier","hub_daily_capacity"]], on='hub_id', how='left')
@@ -79,3 +96,142 @@ features = build_features(clean_data, hub_data)
 
 features["is_delayed"] = (features["delivery_hours"] > features["promised_hours"]).astype(int)
 features.to_csv("/content/data/modelling_table.csv", index=False)
+
+deduped = raw_data.drop_duplicates(subset=["shipment_id"])
+
+hours = features["delivery_hours"]
+q1 = float(hours.quantile(0.25))
+q3 = float(hours.quantile(0.75))
+lower = q1 - 1.5 * (q3 - q1)
+upper = q3 + 1.5 * (q3 - q1)
+
+FEATURES = [
+    "parcel_weight_kg", "distance_km", "n_stops", "rain_flag", "sale_event_flag",
+    "label_print_batch", "scanner_build_no", "tape_roll_no", "sticker_serial_mod",
+    "shelf_slot_no", "hub_tier", "hub_daily_capacity", "promised_hours", "is_cod",
+    "is_weekend", "dispatch_hour", "log_declared_value",
+]
+
+checks = {
+    "raw_rows": len(raw_data),
+    "duplicate_rows_removed": len(raw_data) - len(deduped),
+    "rows_after_dedup": len(deduped),
+    "missing_distance_km_before": int(deduped["distance_km"].isna().sum()),
+    "missing_parcel_weight_before": int(deduped["parcel_weight_kg"].isna().sum()),
+    "sentinel_weight_rows": int((deduped["parcel_weight_kg"] > 100).sum()),
+    "missing_declared_value_before": int(deduped["declared_value"].isna().sum()),
+    "missing_payment_mode_before": int(deduped["payment_mode"].isna().sum()),
+    "service_type_spellings_before": int(deduped["service_type"].nunique()),
+    "service_type_spellings_after": int(deduped["service_type"].str.strip().str.title().nunique()),
+    "median_distance_km": round(float(medians["distance_km"]), 2),
+    "median_parcel_weight_kg": round(float(medians["parcel_weight_kg"]), 2),
+    "median_declared_value_inr": round(float(medians["declared_value_inr"]), 2),
+    "rows_after_hub_merge": len(features),
+    "nulls_in_features_and_target": int(features[FEATURES + ["delivery_hours", "is_delayed"]].isna().sum().sum()),
+    "delayed_count": int(features["is_delayed"].sum()),
+    "delay_rate": round(float(features["is_delayed"].mean()), 4),
+    "hours_q1": round(q1, 2),
+    "hours_q3": round(q3, 2),
+    "hours_lower_bound": round(lower, 2),
+    "hours_upper_bound": round(upper, 2),
+    "hours_outlier_count": int(((hours < lower) | (hours > upper)).sum()),
+    "declared_value_mean_inr": round(float(features["declared_value_inr"].mean()), 2),
+    "declared_value_median_inr": round(float(features["declared_value_inr"].median()), 2),
+    "log_declared_value_mean": round(float(features["log_declared_value"].mean()), 3),
+    "log_declared_value_median": round(float(features["log_declared_value"].median()), 3),
+}
+
+os.makedirs("/content/outputs", exist_ok=True)
+pd.DataFrame({"metric": list(checks), "value": list(checks.values())}).to_csv(
+    "/content/outputs/part_a_checks.csv", index=False
+)
+
+def band(d):
+    if d <= 200:
+        return "0-200"
+    if d <= 400:
+        return "201-400"
+    if d <= 600:
+        return "401-600"
+    return "601+"
+
+features["distance_band"] = features["distance_km"].map(band)
+
+
+display(pd.DataFrame({"metric": list(checks), "value": list(checks.values())}))
+
+print("corr(delivery_hours, promised_hours) =", round(features["delivery_hours"].corr(features["promised_hours"]), 3))
+print("corr(delivery_hours, distance_km) =", round(features["delivery_hours"].corr(features["distance_km"]), 3))
+print("corr(is_delayed, distance_km) =", round(features["is_delayed"].corr(features["distance_km"]), 3))
+
+import os
+import numpy as np
+import pandas as pd
+
+os.makedirs("/content/outputs", exist_ok=True)
+
+features["distance_band"] = pd.cut(
+    features["distance_km"],
+    bins=[0, 200, 400, 600, 2000],
+    labels=["0-200", "201-400", "401-600", "601+"],
+    right=True,
+    include_lowest=True,
+)
+
+rows = []
+for dimension in ["service_type", "hub_tier", "distance_band"]:
+    for group, subset in features.groupby(dimension, observed=True):
+        shipments = int(len(subset))
+        delayed = int(subset["is_delayed"].sum())
+        rows.append({
+            "dimension": dimension,
+            "group": group,
+            "shipments": shipments,
+            "delayed": delayed,
+            "delay_rate": round(delayed / shipments, 4),
+            "mean_hours": round(float(subset["delivery_hours"].mean()), 2),
+        })
+
+delay = pd.DataFrame(rows)
+delay.to_csv("/content/outputs/part_a_delay_by_group.csv", index=False)
+
+numeric = features.select_dtypes(include=[np.number])
+corr = numeric.corr().round(4)
+corr.to_csv("/content/outputs/part_a_correlations.csv")
+
+checks = pd.read_csv("/content/outputs/part_a_checks.csv")
+def metric(name):
+    return checks.loc[checks["metric"] == name, "value"].iloc[0]
+
+by_service = delay[delay["dimension"] == "service_type"].sort_values("delay_rate", ascending=False).iloc[0]
+tier = delay[delay["dimension"] == "hub_tier"].copy()
+tier["group"] = tier["group"].astype(str)
+t1 = tier[tier["group"] == "1"].iloc[0]
+t3 = tier[tier["group"] == "3"].iloc[0]
+bands = delay[delay["dimension"] == "distance_band"]
+
+ranked = corr["delivery_hours"].drop(labels=["delivery_hours"])
+ranked = ranked.reindex(ranked.abs().sort_values(ascending=False).index)
+top3 = ranked.head(3)
+top3_text = ", ".join(f"{name} ({value:.4f})" for name, value in top3.items())
+
+band_text = ", ".join(f"{row.group} at {row.delay_rate:.4f}" for row in bands.itertuples())
+
+findings = f"""# Data findings
+
+(i) {by_service['group']} is delayed most often, at a rate of {by_service['delay_rate']:.4f} ({int(by_service['delayed'])} of {int(by_service['shipments'])} shipments).
+
+(ii) The delay rate rises from {t1['delay_rate']:.4f} on Tier 1 hubs to {t3['delay_rate']:.4f} on Tier 3 hubs.
+
+(iii) The delay rate rises across distance bands: {band_text}.
+
+(iv) The three columns most strongly correlated with delivery_hours are {top3_text}.
+
+(v) On the filled declared_value_inr column the mean is {float(metric('declared_value_mean_inr')):.2f} and the median is {float(metric('declared_value_median_inr')):.1f}, so the mean sits above the median. After the natural log the mean is {float(metric('log_declared_value_mean')):.3f} and the median is {float(metric('log_declared_value_median')):.3f}, which are nearly the same, because the log compresses the long right tail.
+"""
+
+with open("/content/README.md", "w") as f:
+    f.write(findings)
+
+display(delay)
+print(findings)
